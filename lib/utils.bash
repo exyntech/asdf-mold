@@ -3,13 +3,17 @@
 set -euo pipefail
 
 # TODO: Ensure this is the correct GitHub homepage where releases can be downloaded for mold.
-GH_REPO="https://github.com/exyntech/mold"
+GH_REPO="https://github.com/rui314/mold"
 TOOL_NAME="mold"
 TOOL_TEST="mold --help"
 
 fail() {
   echo -e "asdf-$TOOL_NAME: $*"
   exit 1
+}
+
+log() {
+  echo -e "asdf-$TOOL_NAME: [INFO] $*"
 }
 
 curl_opts=(-fsSL)
@@ -36,22 +40,82 @@ list_all_versions() {
   list_github_tags
 }
 
-download_release() {
-  local version filename url
+download_binary() {
+  local version filepath url
   version="$1"
-  filename="$2"
+  filepath="$2"
 
-  # TODO: Adapt the release URL convention for mold
-  url="$GH_REPO/archive/v${version}.tar.gz"
+  local platforms=()
+  local kernel arch
+  kernel="$(uname -s)"
+  arch="$(uname -m)"
 
-  echo "* Downloading $TOOL_NAME release $version..."
-  curl "${curl_opts[@]}" -o "$filename" -C - "$url" || fail "Could not download $url"
+  case "$kernel" in
+  Linux)
+    platforms=("${arch}-linux")
+    ;;
+  esac
+
+  log "Downloading $TOOL_NAME release $version..."
+  for platform in "${platforms[@]}"; do
+    url="$GH_REPO/releases/download/v${version}/${TOOL_NAME}-${version}-${platform}.tar.gz"
+    log "Trying ${url} ..."
+    curl "${curl_opts[@]}" -o "$filepath" -C - "$url" && return 0
+  done
+
+  return 1
+}
+
+extract() {
+  local archive_path=$1
+  local target_dir=$2
+
+  tar -xzf "$archive_path" -C "$target_dir" --strip-components=1 || fail "Could not extract $archive_path"
+}
+
+binary_download_and_extract() {
+  # Puts the extracted files in $ASDF_DOWNLOAD_PATH/bin
+
+  local version=$1
+  local download_dir=$2
+
+  local extract_dir="${download_dir}"
+  mkdir -p "$extract_dir"
+
+  local download_file="${download_dir}/${TOOL_NAME}-${version}-bin.tar.gz"
+
+  if download_binary "$version" "${download_file}"; then
+    extract "${download_file}" "${extract_dir}"
+    rm "${download_file}"
+    return 0
+  fi
+
+  return 1
+}
+
+download_and_extract() {
+
+  local install_type="$1"
+  local version="$2"
+  local download_dir="$3"
+
+  if [ "$install_type" != "version" ]; then
+    fail "asdf-$TOOL_NAME supports release installs only"
+    # TODO: support refs
+  fi
+
+  ## Binary Download & Extract
+  if binary_download_and_extract "$version" "${download_dir}"; then
+    return 0
+  else
+    fail "Could not find a suitable binary download for $TOOL_NAME $version. Source install is not yet supported."
+  fi
 }
 
 install_version() {
   local install_type="$1"
   local version="$2"
-  local install_path="${3%/bin}/bin"
+  local install_path="${3%/bin}"
 
   if [ "$install_type" != "version" ]; then
     fail "asdf-$TOOL_NAME supports release installs only"
@@ -59,12 +123,12 @@ install_version() {
 
   (
     mkdir -p "$install_path"
-    cp -r "$ASDF_DOWNLOAD_PATH"/* "$install_path"
+    cp -r "$ASDF_DOWNLOAD_PATH"/* "$install_path"/
 
     # TODO: Assert mold executable exists.
     local tool_cmd
     tool_cmd="$(echo "$TOOL_TEST" | cut -d' ' -f1)"
-    test -x "$install_path/$tool_cmd" || fail "Expected $install_path/$tool_cmd to be executable."
+    test -x "$install_path/bin/$tool_cmd" || fail "Expected $install_path/$tool_cmd to be executable."
 
     echo "$TOOL_NAME $version installation was successful!"
   ) || (
